@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vad"
+version = "0.1.0"
+requires-python= ">=3.12"
+dependencies = [
+    "transformers",
+    "diffusers",
+    "accelerate",
+    "sentencepiece",
+    "protobuf",
+    "scikit-learn",
+    "scipy",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "pillow",
+    "pyyaml",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ipykernel",
+    "jupyterlab",
+    "nbformat",
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "entrypoints", "tests"]
+exclude = ["notebooks", "data", ".git", "__pycache__"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

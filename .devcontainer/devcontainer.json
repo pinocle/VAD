@@ -1,0 +1,33 @@
+{
+    "name": "VAD Dev Container",
+
+    "dockerComposeFile": "../compose.yaml",
+    "service": "dev",
+    "workspaceFolder": "/workspace/VAD",
+
+    "remoteUser": "mk",
+    "updateRemoteUserUID": false,
+
+    "shutdownAction": "stopCompose",
+
+    "forwardPorts": [8888, 6006],
+
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "python.defaultInterpreterPath": "/usr/bin/python3"
+            },
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-toolsai.jupyter",
+                "ms-toolsai.jupyter-keymap",
+                "ms-toolsai.jupyter-renderers",
+                "openai.chatgpt"
+            ]
+        }
+    },
+
+    "postCreateCommand": "python3 - <<'PY'\nimport torch\nprint('torch:', torch.__version__)\nprint('cuda:', torch.cuda.is_available())\nPY\nnvidia-smi || true\ncodex --version || true"
+}

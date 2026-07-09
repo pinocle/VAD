@@ -1,0 +1,16 @@
+transformers
+diffusers
+accelerate
+sentencepiece
+peft
+einops
+omegaconf
+deepspeed
+torchcodec
+albumentations
+opencv-python-headless
+av
+termcolor
+jsonlines
+scikit-learn
+scipy

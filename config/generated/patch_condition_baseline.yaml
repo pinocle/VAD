@@ -1,0 +1,184 @@
+dataset:
+  name: shanghaitech
+  processed_root: data/02_processed/shanghaitech
+  raw_root: data/01_raw/ShanghaiTech Campus
+features:
+  batch_size: 32
+  dtype: float16
+  high:
+    cache: true
+    freeze: true
+    image_size: 224
+    model_id: facebook/dinov2-base
+    output_layer: -2
+    processor_do_center_crop: false
+    processor_do_resize: false
+    token_mode: patch
+    type: image
+  low:
+    cache: true
+    image_size: 256
+    method: farneback
+    mode: uv_mag
+    type: optical_flow
+  num_workers: 8
+  root: data/03_features/shanghaitech
+  z:
+    cache: true
+    freeze: true
+    image_size: 256
+    model_id: madebyollin/sdxl-vae-fp16-fix
+    type: vae
+    z_mode: mode
+flow_matching:
+  beta_alpha: 1.5
+  beta_beta: 1.0
+  beta_s: 0.999
+  inference_steps: 4
+  normalize_z: true
+  time_embedding_scale: 1000.0
+  timestep_distribution: gr00t_beta
+inference:
+  batch_size: 16
+  checkpoint_path: null
+  compile: false
+  feature_index: data/03_features/shanghaitech/test_feature_index_yolo_tracks.jsonl
+  mode: offline_cached
+  num_workers: 4
+  output_root: data/04_predictions/shanghaitech
+  overwrite: false
+  save_tensors: false
+logging:
+  progress:
+    dynamic_ncols: true
+    enabled: true
+    mininterval: 5.0
+    smoothing: 0.05
+loss:
+  alpha: 0.2
+  topk_fraction: 0.1
+model:
+  condition:
+    mode: baseline
+    track_grid:
+      ablation_mode: real_track
+      channel_mask: all_channels
+      shuffle_seed: 7
+    track_grid_gate: 0.1
+    use_track_grid: false
+  dit:
+    dropout: 0.05
+    gradient_checkpointing: true
+    hidden_size: 768
+    mlp_ratio: 4.0
+    num_heads: 12
+    num_layers: 16
+  high_adapter:
+    foreground_ratio: 0.75
+    input_dim: auto
+    max_tokens: 512
+    token_reduction: aligned_grid
+    use_pos_embedding: true
+  low_adapter:
+    patch_size: 16
+    use_spatial_pos: true
+    use_temporal_pos: true
+  name: high_low_conditioned_z_dit
+  prediction_type: velocity
+  z_adapter:
+    patch_size: 2
+    use_spatial_pos: true
+    use_temporal_pos: true
+optimization:
+  cudnn_benchmark: true
+  enable_flash_sdp: true
+  enable_tf32: true
+  fused_adamw: auto
+  matmul_precision: high
+  prefetch_factor: 1
+preprocess:
+  fps: native
+  frame_index_start: 1
+  image_backend: auto
+  image_ext: jpg
+  jpeg_quality: 2
+  label_mismatch_policy: error
+  label_source: test_frame_mask
+  num_workers: 8
+  overwrite: false
+sampling:
+  context_frames: 32
+  context_sampling: dense
+  context_span: 32
+  future_frames: 8
+  gap: 0
+  stride_test: 4
+  stride_train: 8
+  window_label: any_future_anomaly
+scoring:
+  beta: 0.2
+  calibration:
+    enabled: false
+    eps: 1.0e-06
+    fit_output_path: null
+    group_key: scene_id
+    stats_path: null
+  decoded_mse:
+    alpha: 0.1
+    enabled: false
+  frame_aggregation: mean
+  low_weight_alpha: 1.0
+  low_weight_eps: 1.0e-06
+  method: normalized_z_mse
+  motion_topk_fraction: 0.25
+  normalized_z_mse:
+    eps: 1.0e-06
+  score_normalization:
+    enabled: true
+    primary: video_centered
+    rolling_min_history: 16
+    rolling_window: 128
+    rolling_windows:
+    - 32
+    - 64
+    - 128
+    - 256
+  sweep:
+    betas:
+    - 0.0
+    - 0.1
+    - 0.2
+    - 0.5
+    topk_fractions:
+    - 0.05
+    - 0.1
+    - 0.2
+  topk_fraction: 0.1
+  variant: global_patch
+  variants:
+  - global
+  - global_patch
+  - motion_patch
+  - motion_global_patch
+  - track_weighted
+  - track_region_topk
+  - mean_topk_plus_track_region
+training:
+  amp: true
+  batch_size: 16
+  compile: false
+  dtype: float16
+  feature_index: data/03_features/shanghaitech/train_feature_index_yolo_tracks.jsonl
+  grad_clip_norm: 1.0
+  init_checkpoint_path: null
+  learning_rate: 0.0001
+  log_every_steps: 50
+  max_steps: 20000
+  num_workers: 4
+  output_root: checkpoints
+  overwrite: false
+  run_id: null
+  save_every_steps: 1000
+  seed: 42
+  val_fraction: 0.05
+  weight_decay: 0.01

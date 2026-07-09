@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local secrets and auth
+auth.json
+.env
+.env.*
+
+# Generated data and checkpoints
+checkpoints/
+data/02_processed/
+data/03_features/
+data/04_predictions/
+
+# Logs
+*.log
+runs/
+wandb/
+
+# Codex
+.codex/*
+!.codex/config.toml
