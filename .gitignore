@@ -8,16 +8,16 @@ __pycache__/
 # Notebooks
 .ipynb_checkpoints/
 
-# Local secrets and auth
-auth.json
-.env
-.env.*
+# Environment
+.gitignore
+AGENTS.md
+Dockerfile
+compose.yaml
+.devcontainer/
+
 
 # Generated data and checkpoints
-checkpoints/
-data/02_processed/
-data/03_features/
-data/04_predictions/
+data/
 
 # Logs
 *.log
