@@ -1,346 +1,86 @@
-# Local experiment config.
-# Comments list supported values and when each option should be changed.
+# Local fixed-grid RGB-patch VAD experiment.
 
 dataset:
-  # Supported: shanghaitech, shanghaitech_campus, avenue, cuhk_avenue.
-  name: shanghaitech
-  # Raw root. ShanghaiTech layout: training/videos, testing/frames, testing/test_frame_mask.
-  # Avenue layout: training_videos, testing_videos, ground_truth_demo/testing_label_mask.
-  raw_root: data/01_raw/ShanghaiTech Campus
-  # Preprocessed frames, labels, manifests, and window indices are written here.
-  processed_root: data/02_processed/shanghaitech
+  name: shanghai
+  # MA-PDM layout: <root>/<dataset>/{training,testing}/frames/<video_id>/*.jpg
+  raw_root: data/01_raw
+  processed_root: data/02_processed
 
 logging:
   progress:
-    # true shows tqdm progress bars. Can be overridden with TQDM_DISABLE=1.
     enabled: true
-    # Minimum seconds between tqdm screen refreshes. Can be overridden with TQDM_MININTERVAL.
     mininterval: 5.0
-    # true adapts progress width to the current terminal/notebook width.
     dynamic_ncols: true
-    # tqdm speed smoothing factor in [0, 1]. Lower is steadier for long jobs.
     smoothing: 0.05
 
 preprocess:
-  # native keeps source FPS. Use a positive integer such as 15 or 24 to resample.
-  fps: native
-  # Supported: jpg, jpeg, png.
   image_ext: jpg
-  # ffmpeg JPEG qscale. Lower is higher quality/larger files.
-  jpeg_quality: 2
-  # true rewrites already extracted/copied processed frames.
+  jpeg_quality: 95
   overwrite: false
-  # Processed frame numbering start. Keep 1 for dataset-style frame indices.
-  frame_index_start: 1
-  # Parallel image copy/convert workers for frame-directory sources.
-  num_workers: 8
-  # Supported: auto, opencv, pillow.
-  image_backend: auto
-  # ShanghaiTech: test_frame_mask. Avenue: ground_truth_demo/testing_label_mask.
-  label_source: test_frame_mask
-  # Supported v1: error.
-  label_mismatch_policy: error
+  # MA-PDM uses 1-based Shanghai filenames and 0-based filenames for other datasets.
+  frame_index_start: auto
 
 sampling:
-  # Number of past frames used for C_high/C_low conditions.
   context_frames: 32
-  # Number of future target frames encoded as Z.
   future_frames: 8
-  # Supported: dense, sparse_uniform.
-  context_sampling: dense
-  # For dense, must equal context_frames. For sparse_uniform, this is the source span.
-  context_span: 32
-  # Number of frames skipped between context end and future start.
   gap: 0
-  # Window stride for normal train videos.
-  stride_train: 8
-  # Window stride for test videos.
-  stride_test: 4
-  # Supported v1: any_future_anomaly.
+  # MA-PDM scans every possible starting frame by default.
+  stride_train: 1
+  stride_test: 1
   window_label: any_future_anomaly
 
-features:
-  # Feature cache root. Output contains high/z/low tensors and feature indices.
-  root: data/03_features/shanghaitech
-  # Default extraction batch size; high/z/low can override inside their sections.
-  batch_size: 32
-  # DataLoader workers for feature extraction.
-  num_workers: 8
-  # Stored tensor dtype. Supported: float16, bfloat16, float32.
-  dtype: float16
-
-  high:
-    # Supported v1: image.
-    type: image
-    # HuggingFace image/video encoder id for C_high.
-    model_id: facebook/dinov2-base
-    # Input image size after the shared square-resize view. HF processor resize/crop is disabled below.
-    image_size: 224
-    # false keeps DINO's native 224 view. DINOv2 patch size 14 gives a 16x16 C_high grid.
-    processor_do_resize: false
-    # false avoids DINO center-cropping a different region from VAE Z.
-    processor_do_center_crop: false
-    # Hidden-state layer to cache. Negative index follows Python indexing.
-    output_layer: -2
-    # Supported: cls, patch, all.
-    token_mode: patch
-    # true keeps the encoder frozen; cache=true requires freeze=true.
-    freeze: true
-    # true writes C_high tensors under data/03_features.
-    cache: true
-
-  z:
-    # Supported v1: vae.
-    type: vae
-    # HuggingFace/diffusers VAE id for Z.
-    model_id: madebyollin/sdxl-vae-fp16-fix
-    # Input image size for VAE encoding.
-    image_size: 256
-    # Supported: mode, sample, mean. mode is deterministic and recommended for cached Z.
-    z_mode: mode
-    # true keeps the VAE frozen; cache=true requires freeze=true.
-    freeze: true
-    # true writes Z tensors under data/03_features.
-    cache: true
-
-  low:
-    # Supported: frame_diff, optical_flow.
-    # optical_flow uses OpenCV Farneback flow between past frames as the C_low condition.
-    type: optical_flow
-    # Input image size for C_low. 256 / low_adapter.patch_size 16 -> 16x16.
-    image_size: 256
-    # frame_diff modes: signed, abs. optical_flow modes: uv, uv_mag.
-    mode: uv_mag
-    # optical_flow method. Supported: farneback.
-    method: farneback
-    # true writes C_low tensors under data/03_features and adds low_feature_path to feature indices.
-    cache: true
-
 model:
-  # Supported v1: high_low_conditioned_z_dit.
-  name: high_low_conditioned_z_dit
-  # Supported v1: velocity. DiT predicts Z_norm - sigma for flow matching.
-  prediction_type: velocity
-
-  dit:
-    # Transformer hidden dimension. Must be divisible by num_heads.
-    hidden_size: 768
-    # Number of DiT blocks.
-    num_layers: 16
-    # Multi-head attention heads.
-    num_heads: 12
-    # MLP expansion ratio inside each DiT block.
-    mlp_ratio: 4.0
-    # Transformer dropout. 0.0 is common for deterministic generative training;
-    # use a small value when scaling model capacity to reduce overfitting.
-    dropout: 0.05
-    # true saves activation memory but can slow training. Recommended for 16-layer large runs.
-    gradient_checkpointing: true
-
-  high_adapter:
-    # auto infers C_high feature dimension from cached C_high tensor.
-    input_dim: auto
-    # Used by uniform/foreground_background. ignored by aligned_grid because grid order is preserved.
-    max_tokens: 512
-    # Supported: aligned_grid, uniform, foreground_background.
-    # aligned_grid pools C_high patch tokens onto the DiT Z grid.
-    token_reduction: aligned_grid
-    # Used only by foreground_background. Fraction of selected C_high tokens from high-C_low patches.
-    foreground_ratio: 0.75
-    # Add learned temporal/token position embeddings to C_high tokens.
-    use_pos_embedding: true
-
-  low_adapter:
-    # Used only when feature index records contain low_feature_path.
-    # Patch size for image-space C_low tensors. 256 / 16 aligns C_low to the 16x16 Z grid.
-    patch_size: 16
-    # Add learned temporal position embeddings to C_low tokens.
-    use_temporal_pos: true
-    # Add learned spatial position embeddings to C_low tokens.
-    use_spatial_pos: true
-
-  z_adapter:
-    # Z-space patch size. With features.z.image_size 256, VAE Z is 32x32 and 32 / 2 -> 16x16.
-    patch_size: 2
-    # Add learned temporal position embeddings to Z tokens.
-    use_temporal_pos: true
-    # Add learned spatial position embeddings to Z tokens.
-    use_spatial_pos: true
-
-  condition:
-    # true appends Phase 1 C_track context_grid tokens to DiT condition tokens.
-    # Requires feature-index records with track_feature_path.
-    use_track_grid: false
-    # Initial learnable scalar gate applied to C_track tokens when enabled.
-    track_grid_gate: 0.1
-    track_grid:
-      # Inference ablation only. Supported: real, zero, shuffled.
-      ablation_mode: real
-      shuffle_seed: 0
-      # Supported named masks include all_channels, objectness_only, speed_only,
-      # trajectory_only, objectness_speed, objectness_trajectory, speed_trajectory.
-      channel_mask: all_channels
-      # Optional inference-time override for the learnable checkpoint gate.
-      gate_override: null
+  name: rgb_patch_dit
+  # Frames are square-resized, normalized to [-1, 1], then row-major patchified.
+  image_size: 256
+  # Supported fixed-grid patch sizes: 16, 32.
+  patch_size: 16
+  hidden_size: 512
+  num_layers: 12
+  num_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.0
+  memory:
+    # Learned appearance-motion memory slots retrieved by each context window.
+    size: 64
+    temperature: 0.25
 
 flow_matching:
-  # Euler sampling steps at inference. GR00T-style default is small; try 4, 8, 16.
-  inference_steps: 4
-  # Supported: uniform, gr00t_beta. gr00t_beta samples tau=s*(1-Beta(alpha,beta)).
-  timestep_distribution: gr00t_beta
-  # Scale continuous tau in [0,1] before sinusoidal time embedding.
-  time_embedding_scale: 1000.0
-  # true trains/samples in train-Z normalized space, then denormalizes Z_hat.
-  normalize_z: true
-  # GR00T-style timestep sampling parameters.
-  beta_alpha: 1.5
-  beta_beta: 1.0
-  beta_s: 0.999
-
-loss:
-  # DiT loss: loss_global + alpha * loss_patch.
-  # loss_global = MSE(v_pred, v_target).
-  # loss_patch = Mean(TopK(patch_error)) on the Z DiT patch grid.
-  alpha: 0.2
-  # Fraction of highest-error spatial patches per future frame used by loss_patch.
-  topk_fraction: 0.10
-
-optimization:
-  # Supported: highest, high, medium. high enables faster CUDA matmul with small precision tradeoff.
-  matmul_precision: high
-  # true enables TF32 matmul/cuDNN kernels on NVIDIA GPUs that support it.
-  enable_tf32: true
-  # true lets cuDNN autotune fixed-shape kernels for better throughput.
-  cudnn_benchmark: true
-  # true enables PyTorch flash scaled-dot-product attention backend when eligible.
-  enable_flash_sdp: true
-  # Supported: auto, true, false. auto tries CUDA fused AdamW and falls back if unsupported.
-  fused_adamw: auto
-  # DataLoader prefetch batches per worker when num_workers > 0. Keep low to avoid RAM spikes.
-  prefetch_factor: 1
+  # Euler integration steps from Gaussian noise to future RGB patches.
+  inference_steps: 8
+  timestep_distribution: uniform
 
 training:
-  # Train feature index produced by entrypoints/extract_features.py.
-  feature_index: data/03_features/shanghaitech/train_feature_index.jsonl
-  # Optional checkpoint used only to initialize model weights before training.
-  # Optimizer state and source-dataset Z stats are not reused.
-  init_checkpoint_path: null
-  # Checkpoints are written under output_root/run_id.
+  sample_index: data/02_processed/shanghai/metadata/samples_train.jsonl
   output_root: checkpoints
-  # null creates a UTC timestamp run id. Set a string for reproducible output paths.
   run_id: null
-  # true deletes an existing non-empty checkpoints/<run_id> before training.
   overwrite: false
-  # Batch size for cached feature training.
-  batch_size: 16
-  # DataLoader workers for cached feature loading.
+  batch_size: 4
   num_workers: 4
-  # GR00T-style step-based training length.
   max_steps: 20000
-  # Fraction of normal train windows used for validation. 0 disables validation.
   val_fraction: 0.05
-  # AdamW learning rate.
-  learning_rate: 1.0e-4
-  # AdamW weight decay.
-  weight_decay: 1.0e-2
-  # Gradient clipping norm. Set 0 to disable.
+  learning_rate: 0.0001
+  weight_decay: 0.01
   grad_clip_norm: 1.0
-  # AMP dtype. Supported: float16, bfloat16, float32.
   dtype: float16
-  # true enables CUDA AMP when dtype is float16/bfloat16.
   amp: true
-  # true enables torch.compile. Faster for long runs, but startup/compatibility cost exists.
   compile: false
-  # Random seed for split/shuffle/noise reproducibility.
   seed: 42
-  # Print/write train metrics every N steps.
   log_every_steps: 50
-  # Save last/best checkpoint every N steps.
   save_every_steps: 1000
 
 inference:
-  # Test feature index produced by entrypoints/extract_features.py.
-  feature_index: data/03_features/shanghaitech/test_feature_index.jsonl
-  # null means pass --checkpoint or --run-id. Otherwise set checkpoints/<run_id>/best.pt.
+  sample_index: data/02_processed/shanghai/metadata/samples_test.jsonl
   checkpoint_path: null
-  # Predictions are written under output_root/run_id.
-  output_root: data/04_predictions/shanghaitech
-  # Batch size for cached feature inference.
-  batch_size: 16
-  # DataLoader workers for cached feature loading.
+  output_root: data/04_predictions/shanghai
+  batch_size: 4
   num_workers: 4
-  # Supported v1: offline_cached. Uses cached Z and does not run VAE.
-  mode: offline_cached
-  # true enables torch.compile for inference. Useful for repeated/large inference runs.
   compile: false
-  # true stores predicted Z_hat tensors. Usually keep false to avoid large outputs.
   save_tensors: false
-  # true allows overwriting existing data/04_predictions/<run_id>.
   overwrite: false
 
 scoring:
-  # Supported: normalized_z_mse, z_mse.
-  method: normalized_z_mse
-  # Supported v1: mean. Aggregates overlapping future-frame scores into final frame scores.
-  frame_aggregation: mean
-  # Primary variant used for score/raw_score fields. All variants below are still evaluated.
-  # Supported: global, patch, low_weighted, global_patch, motion_patch, motion_global_patch.
-  variant: global_patch
-  # Score variants computed from the same Z and Z_hat without retraining.
-  variants:
-    - global
-    - patch
-    - low_weighted
-    - global_patch
-    - motion_patch
-    - motion_global_patch
-  # Fraction of highest-error DiT Z patches used by patch and global_patch.
+  # score = full_frame + topk_weight * topk + memory_distance_weight * memory_distance
   topk_fraction: 0.10
-  # Weight strength for low_weighted: weight = 1 + alpha * normalized_low.
-  low_weight_alpha: 1.0
-  # Numerical floor for C_low normalization.
-  low_weight_eps: 1.0e-6
-  # global_patch score is global + beta * patch. Tune separately from training loss.alpha.
-  beta: 0.2
-  # Fraction of highest-motion C_low patches used by motion_* score variants.
-  motion_topk_fraction: 0.25
-  sweep:
-    # Extra global_patch score variants computed at inference without retraining.
-    betas: [0.0, 0.1, 0.2, 0.5]
-    # Extra TopK patch fractions computed at inference without retraining.
-    topk_fractions: [0.05, 0.10, 0.20]
-
-  normalized_z_mse:
-    # Numerical floor for train Z std normalization.
-    eps: 1.0e-6
-
-  score_normalization:
-    # true keeps raw_score and writes centered score variants to frame_scores.jsonl.
-    enabled: true
-    # Supported: raw, video_centered, rolling_centered.
-    # video_centered is best for offline benchmark; rolling_centered is causal for streaming-style use.
-    primary: video_centered
-    # Number of previous frames used for rolling_centered baseline.
-    rolling_window: 128
-    # Extra causal rolling windows to evaluate for every raw score variant.
-    rolling_windows: [32, 64, 128, 256]
-    # Use all available history until this many previous frames are available.
-    rolling_min_history: 16
-
-  calibration:
-    # true applies fitted scene/video normal calibration from stats_path.
-    enabled: false
-    # JSON generated by inference --fit-calibration.
-    stats_path: null
-    # Optional JSON path to write calibration stats during this inference run.
-    fit_output_path: null
-    # Supported practical values: scene_id, video_id.
-    group_key: scene_id
-    # Numerical floor for MAD scale.
-    eps: 1.0e-6
-
-  decoded_mse:
-    # Reserved for later; current code requires false.
-    enabled: false
-    # Weight for decoded MSE when that mode is implemented.
-    alpha: 0.1
+  topk_weight: 0.20
+  memory_distance_weight: 0.0

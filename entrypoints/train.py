@@ -1,4 +1,4 @@
-"""Train the C_high/C_low-conditioned Z DiT."""
+"""Train the memory-guided fixed-grid RGB-patch DiT."""
 
 # ruff: noqa: E402, I001
 
@@ -22,7 +22,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("config/local.yaml"))
     parser.add_argument("--run-id", type=str, default=None)
-    parser.add_argument("--init-checkpoint", type=Path, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--limit-samples", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")
@@ -36,7 +35,6 @@ def main() -> None:
     run_dir = train(
         args.config,
         run_id=args.run_id,
-        init_checkpoint_path=args.init_checkpoint,
         max_steps=args.max_steps,
         limit_samples=args.limit_samples,
         overwrite=args.overwrite,

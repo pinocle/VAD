@@ -1,4 +1,4 @@
-"""Run Z DiT inference and write frame-level anomaly scores."""
+"""Generate future RGB patches from noise and write anomaly scores."""
 
 # ruff: noqa: E402, I001
 
@@ -24,9 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--output-run-id", type=str, default=None)
-    parser.add_argument("--feature-index", type=Path, default=None)
-    parser.add_argument("--calibration-stats", type=Path, default=None)
-    parser.add_argument("--fit-calibration", type=Path, default=None)
+    parser.add_argument("--sample-index", type=Path, default=None)
     parser.add_argument("--limit-samples", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -41,9 +39,7 @@ def main() -> None:
         checkpoint_path=args.checkpoint,
         run_id=args.run_id,
         output_run_id=args.output_run_id,
-        feature_index=args.feature_index,
-        calibration_stats_path=args.calibration_stats,
-        fit_calibration_path=args.fit_calibration,
+        sample_index=args.sample_index,
         limit_samples=args.limit_samples,
         overwrite=args.overwrite,
     )
