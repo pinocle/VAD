@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -25,7 +26,15 @@ DATASET_ALIASES = {
     "cuhk_avenue": "avenue",
     "ucfcrime": "ucf",
 }
+RAW_DIR_ALIASES = {
+    "shanghai": ("shanghai", "ShanghaiTech Campus", "ShanghaiTech", "shanghaitech"),
+    "avenue": ("avenue", "CUHK Avenue", "cuhk_avenue"),
+    "ped2": ("ped2", "UCSDped2"),
+    "ucf": ("ucf", "UCF-Crime", "UCF_Crime"),
+    "xd": ("xd", "XD-Violence", "xd_violence"),
+}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp"}
+VIDEO_SUFFIXES = {".avi", ".mp4", ".mov", ".mkv"}
 
 
 @dataclass(frozen=True)
@@ -57,11 +66,11 @@ class PreprocessConfig:
 
     @property
     def raw_dataset_root(self) -> Path:
-        return resolve_dataset_root(self.raw_root, self.dataset_name)
+        return resolve_raw_dataset_root(self.raw_root, self.dataset_name)
 
     @property
     def processed_dataset_root(self) -> Path:
-        return resolve_dataset_root(self.processed_root, self.dataset_name)
+        return resolve_processed_dataset_root(self.processed_root, self.dataset_name)
 
     @property
     def metadata_root(self) -> Path:
@@ -96,7 +105,8 @@ class VideoRecord:
 
     video_id: str
     phase: str
-    frame_dir: Path
+    source_path: Path
+    source_type: str
     labels: np.ndarray | None
 
 
@@ -177,14 +187,51 @@ def resolve_frame_index_start(dataset_name: str, value: Any) -> int:
     return start
 
 
-def resolve_dataset_root(root: Path, dataset_name: str) -> Path:
-    """Accept either MA-PDM's video_folder root or a direct dataset root."""
+def resolve_processed_dataset_root(root: Path, dataset_name: str) -> Path:
+    """Keep processed outputs under the canonical MA-PDM dataset name."""
 
     if root.name == dataset_name:
         return root
     if (root / TRAINING_PHASE / "frames").exists() or (root / TESTING_PHASE / "frames").exists():
         return root
     return root / dataset_name
+
+
+def resolve_raw_dataset_root(root: Path, dataset_name: str) -> Path:
+    """Accept MA-PDM names and common official raw dataset directory names."""
+
+    for candidate in raw_dataset_root_candidates(root, dataset_name):
+        if is_supported_raw_root(candidate, dataset_name):
+            return candidate
+    return root / dataset_name
+
+
+def raw_dataset_root_candidates(root: Path, dataset_name: str) -> list[Path]:
+    """Return direct and aliased raw roots without duplicates."""
+
+    aliases = RAW_DIR_ALIASES.get(dataset_name, (dataset_name,))
+    candidates = [root, *(root / alias for alias in aliases)]
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def is_supported_raw_root(root: Path, dataset_name: str) -> bool:
+    """Return whether a root is already usable by this preprocessor."""
+
+    if (root / TRAINING_PHASE / "frames").is_dir() or (root / TESTING_PHASE / "frames").is_dir():
+        return True
+    if dataset_name == "shanghai":
+        return (root / TRAINING_PHASE / "videos").is_dir() or (
+            root / TESTING_PHASE / "frames"
+        ).is_dir()
+    return False
 
 
 def load_sampling_config(raw: dict[str, Any]) -> SamplingConfig:
@@ -255,23 +302,70 @@ def discover_video_records(
     for phase in MA_PDM_PHASES:
         if phase not in selected:
             continue
-        root = config.raw_frames_root(phase)
-        if not root.is_dir():
-            raise FileNotFoundError(f"Missing MA-PDM frames directory: {root}")
         allowed = load_split_filter(
             config.train_split_path if phase == TRAINING_PHASE else config.test_split_path
         )
-        for frame_dir in sorted(path for path in root.iterdir() if path.is_dir()):
-            if allowed is not None and frame_dir.name not in allowed:
-                continue
-            records.append(
-                VideoRecord(
-                    video_id=frame_dir.name,
-                    phase=phase,
-                    frame_dir=frame_dir,
-                    labels=load_labels(config, frame_dir.name, phase),
-                )
+        root = config.raw_frames_root(phase)
+        if root.is_dir():
+            records.extend(discover_frame_records(config, phase, root, allowed))
+            continue
+        video_root = config.raw_dataset_root / phase / "videos"
+        if config.dataset_name == "shanghai" and phase == TRAINING_PHASE and video_root.is_dir():
+            records.extend(discover_video_file_records(phase, video_root, allowed))
+            continue
+        expected = f"{root}"
+        if config.dataset_name == "shanghai" and phase == TRAINING_PHASE:
+            expected = f"{root} or {video_root}"
+        raise FileNotFoundError(f"Missing MA-PDM frames directory: {expected}")
+    return records
+
+
+def discover_frame_records(
+    config: PreprocessConfig,
+    phase: str,
+    root: Path,
+    allowed: set[str] | None,
+) -> list[VideoRecord]:
+    """Discover one MA-PDM phase where each video is already a frame directory."""
+
+    records = []
+    for frame_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        if allowed is not None and frame_dir.name not in allowed:
+            continue
+        records.append(
+            VideoRecord(
+                video_id=frame_dir.name,
+                phase=phase,
+                source_path=frame_dir,
+                source_type="frames",
+                labels=load_labels(config, frame_dir.name, phase),
             )
+        )
+    return records
+
+
+def discover_video_file_records(
+    phase: str,
+    root: Path,
+    allowed: set[str] | None,
+) -> list[VideoRecord]:
+    """Discover official ShanghaiTech training videos before MA-PDM frame export."""
+
+    records = []
+    for video_path in sorted(
+        path for path in root.iterdir() if path.suffix.lower() in VIDEO_SUFFIXES
+    ):
+        if allowed is not None and video_path.stem not in allowed:
+            continue
+        records.append(
+            VideoRecord(
+                video_id=video_path.stem,
+                phase=phase,
+                source_path=video_path,
+                source_type="video",
+                labels=None,
+            )
+        )
     return records
 
 
@@ -349,17 +443,62 @@ def process_video(
         labels = align_labels(record.labels, len(existing), record.video_id)
         return ProcessedVideo(record.video_id, record.phase, tuple(existing), labels)
 
-    source_frames = source_frame_paths(record.frame_dir)
-    if record.frame_dir != target_dir:
+    if record.source_type == "video":
         if target_dir.exists():
             shutil.rmtree(target_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
-        frames = copy_frame_directory(source_frames, target_dir, config)
+        frames = extract_video_frames(record.source_path, target_dir, config)
     else:
-        frames = source_frames
+        source_frames = source_frame_paths(record.source_path)
+        if record.source_path == target_dir:
+            frames = source_frames
+        else:
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            frames = copy_frame_directory(source_frames, target_dir, config)
 
     labels = align_labels(record.labels, len(frames), record.video_id)
     return ProcessedVideo(record.video_id, record.phase, tuple(frames), labels)
+
+
+def extract_video_frames(source: Path, target_dir: Path, config: PreprocessConfig) -> list[Path]:
+    """Extract official raw videos into MA-PDM's numbered frame convention."""
+
+    ensure_ffmpeg()
+    pattern = target_dir / f"%06d.{config.image_ext}"
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-start_number",
+        str(config.frame_index_start),
+    ]
+    if config.image_ext in {"jpg", "jpeg"}:
+        command.extend(["-q:v", str(jpeg_quality_to_ffmpeg_qscale(config.jpeg_quality))])
+    command.append(str(pattern))
+    subprocess.run(command, check=True)
+    frames = output_frame_paths(target_dir, config.image_ext)
+    if not frames:
+        raise ValueError(f"No frames extracted from {source}")
+    return frames
+
+
+def ensure_ffmpeg() -> None:
+    """Fail with a clear error when official raw videos need extraction."""
+
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg is required to extract ShanghaiTech training videos")
+
+
+def jpeg_quality_to_ffmpeg_qscale(quality: int) -> int:
+    """Map PIL-style quality in [1, 100] to ffmpeg JPEG qscale in [31, 2]."""
+
+    return max(2, min(31, round(31 - ((quality - 1) * 29 / 99))))
 
 
 def source_frame_paths(directory: Path) -> list[Path]:

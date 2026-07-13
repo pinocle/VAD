@@ -34,6 +34,8 @@ class RGBPatchModelConfig:
     dropout: float
     memory_size: int
     memory_temperature: float
+    # Continuous flow time stays in [0, 1]; only its sinusoidal representation is scaled.
+    time_embedding_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -54,8 +56,7 @@ class TrainingConfig:
     overwrite: bool
     batch_size: int
     num_workers: int
-    max_steps: int
-    val_fraction: float
+    epochs: int
     learning_rate: float
     weight_decay: float
     grad_clip_norm: float
@@ -65,6 +66,7 @@ class TrainingConfig:
     seed: int
     log_every_steps: int
     save_every_steps: int
+    preview_every_steps: int
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,7 @@ def load_pipeline_config(path: Path) -> RGBPatchPipelineConfig:
         dropout=float(model_raw.get("dropout", 0.0)),
         memory_size=int(memory_raw.get("size", 64)),
         memory_temperature=float(memory_raw.get("temperature", 0.25)),
+        time_embedding_scale=float(model_raw.get("time_embedding_scale", 1000.0)),
     )
     flow_matching = FlowMatchingConfig(
         inference_steps=int(flow_raw.get("inference_steps", 8)),
@@ -162,8 +165,7 @@ def load_pipeline_config(path: Path) -> RGBPatchPipelineConfig:
         overwrite=bool(training_raw.get("overwrite", False)),
         batch_size=int(training_raw.get("batch_size", 4)),
         num_workers=int(training_raw.get("num_workers", 4)),
-        max_steps=int(training_raw.get("max_steps", 20000)),
-        val_fraction=float(training_raw.get("val_fraction", 0.05)),
+        epochs=int(training_raw.get("epochs", 1)),
         learning_rate=float(training_raw.get("learning_rate", 1.0e-4)),
         weight_decay=float(training_raw.get("weight_decay", 1.0e-2)),
         grad_clip_norm=float(training_raw.get("grad_clip_norm", 1.0)),
@@ -173,6 +175,7 @@ def load_pipeline_config(path: Path) -> RGBPatchPipelineConfig:
         seed=int(training_raw.get("seed", 42)),
         log_every_steps=int(training_raw.get("log_every_steps", 50)),
         save_every_steps=int(training_raw.get("save_every_steps", 1000)),
+        preview_every_steps=int(training_raw.get("preview_every_steps", 5000)),
     )
     checkpoint_value = parse_optional_str(inference_raw.get("checkpoint_path"))
     inference = InferenceConfig(
@@ -236,8 +239,15 @@ def validate_pipeline_config(
         )
     if model.hidden_size % model.num_heads:
         raise ValueError("model.hidden_size must be divisible by model.num_heads")
-    if model.mlp_ratio <= 0 or model.memory_size <= 0 or model.memory_temperature <= 0:
-        raise ValueError("model.mlp_ratio, model.memory.size, and temperature must be positive")
+    if (
+        model.mlp_ratio <= 0
+        or model.memory_size <= 0
+        or model.memory_temperature <= 0
+        or model.time_embedding_scale <= 0
+    ):
+        raise ValueError(
+            "model.mlp_ratio, model.memory settings, and time_embedding_scale must be positive"
+        )
     if flow_matching.inference_steps <= 0:
         raise ValueError("flow_matching.inference_steps must be positive")
     if flow_matching.timestep_distribution != "uniform":
@@ -246,14 +256,16 @@ def validate_pipeline_config(
         raise ValueError("training and inference batch sizes must be positive")
     if training.num_workers < 0 or inference.num_workers < 0:
         raise ValueError("training and inference num_workers must be non-negative")
-    if training.max_steps <= 0:
-        raise ValueError("training.max_steps must be positive")
-    if not 0 <= training.val_fraction < 1:
-        raise ValueError("training.val_fraction must be in [0, 1)")
+    if training.epochs <= 0:
+        raise ValueError("training.epochs must be positive")
     if training.learning_rate <= 0 or training.weight_decay < 0 or training.grad_clip_norm < 0:
         raise ValueError("training optimizer settings are invalid")
     if training.dtype not in {"float16", "bfloat16", "float32"}:
         raise ValueError("training.dtype must be float16, bfloat16, or float32")
+    if training.log_every_steps <= 0 or training.save_every_steps <= 0:
+        raise ValueError("training log/save intervals must be positive")
+    if training.preview_every_steps < 0:
+        raise ValueError("training.preview_every_steps must be non-negative")
     if not 0 < scoring.topk_fraction <= 1:
         raise ValueError("scoring.topk_fraction must be in (0, 1]")
     if scoring.topk_weight < 0 or scoring.memory_distance_weight < 0:
@@ -443,24 +455,6 @@ def infer_patch_shape(sample: dict[str, Any], model: RGBPatchModelConfig) -> RGB
         image_size=model.image_size,
         patch_size=model.patch_size,
     )
-
-
-def split_train_val_records(
-    records: list[dict[str, Any]],
-    *,
-    val_fraction: float,
-    seed: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Create a deterministic train/validation split without leaking test records."""
-
-    if val_fraction <= 0 or len(records) < 2:
-        return records, []
-    generator = torch.Generator().manual_seed(seed)
-    val_count = max(1, int(round(len(records) * val_fraction)))
-    val_indices = set(torch.randperm(len(records), generator=generator)[:val_count].tolist())
-    train_records = [record for index, record in enumerate(records) if index not in val_indices]
-    val_records = [record for index, record in enumerate(records) if index in val_indices]
-    return (train_records, val_records) if train_records else (records, [])
 
 
 def score_patch_prediction(

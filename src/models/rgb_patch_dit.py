@@ -212,7 +212,8 @@ class RGBPatchDiT(nn.Module):
         tokens = self.input_proj(noisy_target)
         tokens = tokens + self.future_temporal_pos + self.future_spatial_pos
         tokens = tokens.flatten(1, 2)
-        time_embedding = self.time_mlp(timestep_embedding(time_values, self.hidden_size))
+        embedded_time = time_values * self.config.time_embedding_scale
+        time_embedding = self.time_mlp(timestep_embedding(embedded_time, self.hidden_size))
         for block in self.blocks:
             if self.gradient_checkpointing and self.training:
                 tokens = checkpoint(block, tokens, condition, time_embedding, use_reentrant=False)
@@ -260,13 +261,22 @@ class FlowMatcher:
         context: torch.Tensor,
         target_shape: tuple[int, int, int, int],
         inference_steps: int | None = None,
+        initial_noise: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Integrate the learned velocity field from noise to future RGB patches."""
 
         steps = inference_steps or self.inference_steps
         if steps <= 0:
             raise ValueError("inference_steps must be positive")
-        generated = torch.randn(target_shape, device=context.device, dtype=context.dtype)
+        if initial_noise is None:
+            generated = torch.randn(target_shape, device=context.device, dtype=context.dtype)
+        else:
+            if tuple(initial_noise.shape) != target_shape:
+                raise ValueError(
+                    "initial_noise shape must match target_shape: "
+                    f"got {tuple(initial_noise.shape)}, expected {target_shape}"
+                )
+            generated = initial_noise.to(device=context.device, dtype=context.dtype).clone()
         memory_distance = torch.zeros(target_shape[0], device=context.device, dtype=context.dtype)
         step_size = 1.0 / steps
         for step in range(steps):

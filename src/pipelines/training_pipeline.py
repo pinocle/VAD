@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from PIL import Image, ImageDraw
 from torch import nn
 
 from src.models import FlowMatcher, RGBPatchDiT
@@ -25,7 +26,7 @@ from src.pipelines.rgb_patch_pipeline import (
     load_pipeline_config,
     load_sample_records,
     make_loader,
-    split_train_val_records,
+    unpatchify_rgb,
 )
 from src.utils import cleanup_memory, progress_bar, progress_write
 
@@ -38,13 +39,10 @@ def train(
     limit_samples: int | None = None,
     overwrite: bool | None = None,
 ) -> Path:
-    """Train RGB-patch DiT on normal frame windows and return its run directory."""
+    """Train RGB-patch DiT on all normal train windows and return its run directory."""
 
     config = load_pipeline_config(config_path)
     active_run_id = run_id or config.training.run_id or default_run_id()
-    active_max_steps = max_steps or config.training.max_steps
-    if active_max_steps <= 0:
-        raise ValueError("max_steps must be positive")
     active_overwrite = config.training.overwrite if overwrite is None else overwrite
     run_dir = config.training.output_root / active_run_id
     prepare_run_dir(run_dir, overwrite=active_overwrite)
@@ -55,13 +53,7 @@ def train(
         normal_only=True,
         limit_samples=limit_samples,
     )
-    train_records, val_records = split_train_val_records(
-        records,
-        val_fraction=config.training.val_fraction,
-        seed=config.training.seed,
-    )
-    train_dataset = RGBPatchDataset(train_records, config.model)
-    val_dataset = RGBPatchDataset(val_records, config.model) if val_records else None
+    train_dataset = RGBPatchDataset(records, config.model)
     shape = infer_patch_shape(train_dataset[0], config.model)
     train_loader = make_loader(
         train_dataset,
@@ -69,16 +61,11 @@ def train(
         num_workers=config.training.num_workers,
         shuffle=True,
     )
-    val_loader = (
-        make_loader(
-            val_dataset,
-            batch_size=config.training.batch_size,
-            num_workers=config.training.num_workers,
-            shuffle=False,
-        )
-        if val_dataset is not None
-        else None
-    )
+    steps_per_epoch = len(train_loader)
+    configured_steps = steps_per_epoch * config.training.epochs
+    active_max_steps = max_steps if max_steps is not None else configured_steps
+    if active_max_steps <= 0:
+        raise ValueError("max_steps must be positive")
 
     device = get_device()
     configure_torch_backend()
@@ -95,6 +82,8 @@ def train(
     metrics_path = run_dir / "metrics.jsonl"
     best_loss = float("inf")
     step = 0
+    epoch_losses: list[float] = []
+    preview = build_fixed_preview(train_dataset[0], seed=config.training.seed)
     progress = progress_bar(total=active_max_steps, desc="train RGB patch DiT", unit="step")
     iterator = iter(train_loader)
 
@@ -124,35 +113,51 @@ def train(
             scaler.step(optimizer)
             scaler.update()
             step += 1
+            loss_value = float(loss.detach().cpu())
+            epoch_losses.append(loss_value)
             progress.update(1)
 
             if step % config.training.log_every_steps == 0 or step == 1:
                 metric = {
                     "step": step,
-                    "train_loss": float(loss.detach().cpu()),
+                    "epoch": (step - 1) // steps_per_epoch + 1,
+                    "train_loss": loss_value,
                     "velocity_loss": float(velocity_loss.detach().cpu()),
                     "memory_distance": float(memory_distance.detach().mean().cpu()),
                 }
                 append_jsonl(metrics_path, metric)
                 progress.set_postfix(loss=f"{metric['train_loss']:.6f}", refresh=False)
 
-            should_save = step % config.training.save_every_steps == 0 or step == active_max_steps
-            if should_save:
-                val_loss = (
-                    evaluate_loss(model, flow, val_loader, config, device) if val_loader else None
-                )
-                selected_loss = val_loss if val_loss is not None else float(loss.detach().cpu())
-                is_best = selected_loss < best_loss
-                best_loss = min(best_loss, selected_loss)
-                save_checkpoint(
-                    run_dir / "last.pt",
-                    model=model,
-                    optimizer=optimizer,
+            should_preview = config.training.preview_every_steps > 0 and (
+                step % config.training.preview_every_steps == 0 or step == active_max_steps
+            )
+            if should_preview:
+                preview_metrics = save_generation_preview(
+                    model,
+                    flow,
+                    preview,
                     shape=shape,
-                    model_config=config.model,
-                    pipeline_config=config,
+                    device=device,
+                    output_path=run_dir / "previews" / f"step_{step:08d}.png",
                     step=step,
-                    best_loss=best_loss,
+                    inference_steps=config.flow_matching.inference_steps,
+                )
+                append_jsonl(metrics_path, preview_metrics)
+
+            epoch_boundary = step % steps_per_epoch == 0 or step == active_max_steps
+            if epoch_boundary:
+                epoch_train_loss = float(np.mean(epoch_losses))
+                epoch_index = (step - 1) // steps_per_epoch + 1
+                is_best = epoch_train_loss < best_loss
+                best_loss = min(best_loss, epoch_train_loss)
+                append_jsonl(
+                    metrics_path,
+                    {
+                        "step": step,
+                        "epoch": epoch_index,
+                        "epoch_train_loss": epoch_train_loss,
+                        "best_loss": best_loss,
+                    },
                 )
                 if is_best:
                     save_checkpoint(
@@ -166,14 +171,19 @@ def train(
                         best_loss=best_loss,
                     )
                     progress_write(f"saved best checkpoint -> {run_dir / 'best.pt'}")
-                append_jsonl(
-                    metrics_path,
-                    {
-                        "step": step,
-                        "validation_loss": val_loss,
-                        "selected_loss": selected_loss,
-                        "best_loss": best_loss,
-                    },
+                epoch_losses.clear()
+
+            should_save = step % config.training.save_every_steps == 0 or step == active_max_steps
+            if should_save:
+                save_checkpoint(
+                    run_dir / "last.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    shape=shape,
+                    model_config=config.model,
+                    pipeline_config=config,
+                    step=step,
+                    best_loss=best_loss,
                 )
     finally:
         progress.close()
@@ -184,6 +194,10 @@ def train(
         {
             "run_id": active_run_id,
             "steps": step,
+            "steps_per_epoch": steps_per_epoch,
+            "configured_epochs": config.training.epochs,
+            "completed_epochs": step / steps_per_epoch,
+            "training_samples": len(train_dataset),
             "best_loss": best_loss,
             "checkpoint": str(run_dir / "best.pt"),
             "shape": asdict(shape),
@@ -192,24 +206,115 @@ def train(
     return run_dir
 
 
-def evaluate_loss(
+def build_fixed_preview(sample: dict[str, Any], *, seed: int) -> dict[str, torch.Tensor]:
+    """Build one fixed train sample/noise pair for comparable generation snapshots."""
+
+    context = sample["context"].unsqueeze(0).cpu()
+    target = sample["target"].unsqueeze(0).cpu()
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    initial_noise = torch.randn(target.shape, generator=generator, dtype=target.dtype)
+    return {
+        "context": context,
+        "target": target,
+        "initial_noise": initial_noise,
+    }
+
+
+@torch.inference_mode()
+def save_generation_preview(
     model: nn.Module,
     flow: FlowMatcher,
-    loader: Any,
-    config: RGBPatchPipelineConfig,
+    preview: dict[str, torch.Tensor],
+    *,
+    shape: RGBPatchShape,
     device: torch.device,
-) -> float:
-    """Estimate validation velocity MSE with fresh flow time/noise samples."""
+    output_path: Path,
+    step: int,
+    inference_steps: int,
+) -> dict[str, Any]:
+    """Save a fixed-seed context/target/generated/error preview during training."""
 
+    was_training = model.training
     model.eval()
-    values = []
-    with torch.inference_mode():
-        for batch in loader:
-            context, target = move_batch(batch, device)
-            noisy_target, time_values, velocity_target = flow.prepare_training_pair(target)
-            prediction, _ = model(noisy_target, time_values, context)
-            values.append(float(torch.nn.functional.mse_loss(prediction, velocity_target).cpu()))
-    return float(np.mean(values)) if values else float("inf")
+    try:
+        context = preview["context"].to(device)
+        target = preview["target"].to(device)
+        generated, memory_distance = flow.sample(
+            model,
+            context=context,
+            target_shape=tuple(target.shape),
+            inference_steps=inference_steps,
+            initial_noise=preview["initial_noise"],
+        )
+    finally:
+        if was_training:
+            model.train()
+
+    context_rgb = unpatchify_rgb(
+        context[0].cpu(),
+        image_size=shape.image_size,
+        patch_size=shape.patch_size,
+    )
+    target_rgb = unpatchify_rgb(
+        target[0].cpu(),
+        image_size=shape.image_size,
+        patch_size=shape.patch_size,
+    )
+    generated_rgb = unpatchify_rgb(
+        generated[0].cpu(),
+        image_size=shape.image_size,
+        patch_size=shape.patch_size,
+    )
+    context_image = rgb_frame_to_array(context_rgb[-1])
+    target_image = rgb_frame_to_array(target_rgb[0])
+    generated_image = rgb_frame_to_array(generated_rgb[0])
+    error_image = rgb_error_to_array(target_image, generated_image)
+
+    labels = ("last context", "actual future +1", "generated future +1", "RGB error")
+    images = (context_image, target_image, generated_image, error_image)
+    banner_height = 24
+    canvas = Image.new(
+        "RGB",
+        (shape.image_size * len(images), shape.image_size + banner_height),
+        color="white",
+    )
+    draw = ImageDraw.Draw(canvas)
+    for index, (label, image) in enumerate(zip(labels, images, strict=True)):
+        x_offset = index * shape.image_size
+        draw.text((x_offset + 4, 5), label, fill="black")
+        canvas.paste(Image.fromarray(image), (x_offset, banner_height))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path)
+
+    metrics = {
+        "step": step,
+        "preview_path": str(output_path),
+        "preview_mse": float(torch.nn.functional.mse_loss(generated.float(), target.float()).cpu()),
+        "preview_generated_std": float(generated.float().std().cpu()),
+        "preview_generated_min": float(generated.float().min().cpu()),
+        "preview_generated_max": float(generated.float().max().cpu()),
+        "preview_memory_distance": float(memory_distance.float().mean().cpu()),
+    }
+    write_json(output_path.with_suffix(".json"), metrics)
+    return metrics
+
+
+def rgb_frame_to_array(frame: torch.Tensor) -> np.ndarray:
+    """Convert one normalized CHW RGB frame into a displayable uint8 array."""
+
+    return (
+        frame.float().add(1.0).div(2.0).clamp(0.0, 1.0).mul(255.0).byte().permute(1, 2, 0).numpy()
+    )
+
+
+def rgb_error_to_array(target: np.ndarray, generated: np.ndarray) -> np.ndarray:
+    """Render mean absolute RGB error as a dark-to-yellow heatmap."""
+
+    error = np.abs(target.astype(np.float32) - generated.astype(np.float32)).mean(axis=-1) / 255.0
+    red = np.clip(error * 2.0, 0.0, 1.0)
+    green = np.clip((error - 0.25) * 2.0, 0.0, 1.0)
+    blue = np.zeros_like(error)
+    return (np.stack((red, green, blue), axis=-1) * 255.0).astype(np.uint8)
 
 
 def save_checkpoint(
