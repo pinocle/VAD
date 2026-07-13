@@ -35,11 +35,15 @@ model:
   image_size: 256
   # Supported fixed-grid patch sizes: 16, 32.
   patch_size: 16
-  hidden_size: 512
+  # patch_dim=16*16*3=768; keep hidden width at least as large to avoid losing noise detail.
+  hidden_size: 768
   num_layers: 12
-  num_heads: 8
+  num_heads: 12
   mlp_ratio: 4.0
   dropout: 0.0
+  # MA-PDM embeds integer diffusion steps in roughly [0, 1000]. Our flow time stays
+  # in [0, 1], and only the sinusoidal embedding input is scaled to the same range.
+  time_embedding_scale: 1000.0
   memory:
     # Learned appearance-motion memory slots retrieved by each context window.
     size: 64
@@ -55,27 +59,29 @@ training:
   output_root: checkpoints
   run_id: null
   overwrite: false
-  batch_size: 4
-  num_workers: 4
-  max_steps: 20000
-  val_fraction: 0.05
+  batch_size: 32
+  num_workers: 8
+  # Consume every normal training window once. No validation split is created.
+  epochs: 3
   learning_rate: 0.0001
   weight_decay: 0.01
   grad_clip_norm: 1.0
-  dtype: float16
+  dtype: bfloat16
   amp: true
-  compile: false
+  compile: true
   seed: 42
   log_every_steps: 50
   save_every_steps: 1000
+  # Fixed train window + fixed noise, used only to monitor RGB generation quality.
+  preview_every_steps: 5000
 
 inference:
   sample_index: data/02_processed/shanghai/metadata/samples_test.jsonl
   checkpoint_path: null
   output_root: data/04_predictions/shanghai
-  batch_size: 4
-  num_workers: 4
-  compile: false
+  batch_size: 32
+  num_workers: 8
+  compile: true
   save_tensors: false
   overwrite: false
 

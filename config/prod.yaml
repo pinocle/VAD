@@ -38,6 +38,7 @@ model:
   num_heads: 12
   mlp_ratio: 4.0
   dropout: 0.0
+  time_embedding_scale: 1000.0
   memory:
     size: 128
     temperature: 0.25
@@ -53,8 +54,8 @@ training:
   overwrite: false
   batch_size: 8
   num_workers: 8
-  max_steps: 100000
-  val_fraction: 0.05
+  # Train/test only: consume the complete normal train index once.
+  epochs: 1
   learning_rate: 0.0001
   weight_decay: 0.01
   grad_clip_norm: 1.0
@@ -64,6 +65,7 @@ training:
   seed: 42
   log_every_steps: 50
   save_every_steps: 1000
+  preview_every_steps: 5000
 
 inference:
   sample_index: data/02_processed/shanghai/metadata/samples_test.jsonl
