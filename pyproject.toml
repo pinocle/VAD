@@ -7,21 +7,21 @@ name = "vad"
 version = "0.1.0"
 requires-python= ">=3.12"
 dependencies = [
-    "torch",
-    "numpy",
+    "torch",            ##있음
+    "numpy",            ##있음
     "scikit-learn",
-    "scipy",
-    "pillow",
-    "pyyaml",
-    "tqdm",
+    "scipy",            ##있음
+    "pillow",           ##있음
+    "pyyaml",           ##있음
+    "tqdm",             ##있음
     "opencv-python-headless",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "ipykernel",
-    "jupyterlab",
-    "nbformat",
+    "ipykernel",        ##있음
+    "jupyterlab",       ##있음
+    "nbformat",         ##있음
     "pytest",
     "ruff",
 ]
